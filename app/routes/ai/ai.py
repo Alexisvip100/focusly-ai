@@ -103,15 +103,20 @@ async def stream_gemini(payload: dict, model: str):
         try:
             async with client.stream("POST", url, json=payload, timeout=60.0) as r:
                 if r.status_code != 200:
-                    error_text = await r.aread()
-                    yield f"Error calling Gemini API: {r.status_code} - {error_text.decode('utf-8', errors='ignore')}"
+                    await r.aread() # consume connection
+                    if r.status_code == 429:
+                        yield "Lumina ha alcanzado el límite de consultas permitidas por hoy. ⏳ Por favor, dale un respiro e intenta de nuevo en unos minutos. ¡Volveré pronto para ayudarte! 🌟"
+                    elif r.status_code == 503:
+                        yield "¡Hola! Lumina está recibiendo muchísimas consultas en este momento y está un poco ocupada. 📭 Por favor, intenta de nuevo en unos segundos. ¡Estaré lista para ti de inmediato! ☕"
+                    else:
+                        yield "Lumina ha experimentado un problema técnico temporal al procesar tu solicitud. 🛠️ Por favor, intenta de nuevo en un momento. ¡Gracias por tu paciencia! ✨"
                     return
                 
                 async for chunk in r.aiter_text():
                     for text in parser.feed(chunk):
                         yield text
         except Exception as e:
-            yield f"\nStreaming error: {str(e)}"
+            yield f"\nLumina ha experimentado un problema técnico temporal al procesar tu solicitud. 🛠️ Por favor, intenta de nuevo en un momento."
 
 # ─── Endpoints ────────────────────────────────────────────────────────────────
 
