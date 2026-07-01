@@ -96,6 +96,11 @@ async def stream_gemini(payload: dict, model: str):
         yield "Error: GEMINI_API_KEY is not configured in focusly-ai settings."
         return
 
+    # Map Claude models to Gemini defaults in case of fallback to Gemini endpoint
+    model_lower = (model or "").lower()
+    if "claude" in model_lower:
+        model = "gemini-2.5-flash-lite"
+
     url = f"https://generativelanguage.googleapis.com/v1beta/models/{model}:streamGenerateContent?key={api_key}"
     parser = GeminiStreamParser()
     
@@ -118,6 +123,48 @@ async def stream_gemini(payload: dict, model: str):
         except Exception as e:
             yield f"\nLumina ha experimentado un problema técnico temporal al procesar tu solicitud. 🛠️ Por favor, intenta de nuevo en un momento."
 
+async def stream_claude(payload: dict):
+    api_key = settings.ANTHROPIC_API_KEY
+    if not api_key:
+        yield "Error: ANTHROPIC_API_KEY is not configured."
+        return
+    
+    url = "https://api.anthropic.com/v1/messages"
+    headers = {
+        "x-api-key": api_key,
+        "anthropic-version": "2023-06-01",
+        "content-type": "application/json"
+    }
+    
+    async with httpx.AsyncClient() as client:
+        try:
+            async with client.stream("POST", url, headers=headers, json=payload, timeout=60.0) as r:
+                if r.status_code != 200:
+                    await r.aread()
+                    if r.status_code == 429:
+                        yield "Lumina ha alcanzado el límite de consultas permitidas por hoy. ⏳ Por favor, dale un respiro e intenta de nuevo en unos minutos. ¡Volveré pronto para ayudarte! 🌟"
+                    elif r.status_code == 503:
+                        yield "¡Hola! Lumina está recibiendo muchísimas consultas en este momento y está un poco ocupada. 📭 Por favor, intenta de nuevo en unos segundos. ¡Estaré lista para ti de inmediato! ☕"
+                    else:
+                        yield "Lumina ha experimentado un problema técnico temporal al procesar tu solicitud. 🛠️ Por favor, intenta de nuevo en un momento. ¡Gracias por tu paciencia! ✨"
+                    return
+                
+                async for line in r.aiter_lines():
+                    if line.startswith("data:"):
+                        data_str = line[5:].strip()
+                        if data_str == "[DONE]":
+                            break
+                        try:
+                            data = json.loads(data_str)
+                            if data.get("type") == "content_block_delta":
+                                text = data.get("delta", {}).get("text", "")
+                                if text:
+                                    yield text
+                        except Exception:
+                            pass
+        except Exception as e:
+            yield f"\nLumina ha experimentado un problema técnico temporal al procesar tu solicitud. 🛠️ Por favor, intenta de nuevo en un momento."
+
 # ─── Endpoints ────────────────────────────────────────────────────────────────
 
 @router.post("/chat")
@@ -125,6 +172,39 @@ async def chat_endpoint(body: ChatRequestSchema):
     if not body.messages:
         raise HTTPException(status_code=400, detail="Messages array cannot be empty")
         
+    # Check if we should use Anthropic Claude (local only)
+    if settings.ANTHROPIC_API_KEY:
+        claude_messages = []
+        for m in body.messages:
+            claude_messages.append({
+                "role": "user" if m.role == "user" else "assistant",
+                "content": m.content
+            })
+            
+        # Map model identifiers dynamically to supported ones
+        model_lower = (body.model or "").lower()
+        if "sonnet" in model_lower:
+            selected_model = "claude-sonnet-5"
+        elif "haiku" in model_lower:
+            selected_model = "claude-haiku-4-5-20251001"
+        elif "opus" in model_lower:
+            selected_model = "claude-opus-4-8"
+        else:
+            selected_model = "claude-sonnet-5"
+
+        payload = {
+            "model": selected_model,
+            "max_tokens": 4000,
+            "system": body.system_context,
+            "messages": claude_messages,
+            "stream": True
+        }
+        return StreamingResponse(
+            stream_claude(payload),
+            media_type="text/plain"
+        )
+
+    # Fallback to Gemini (production standard)
     latest_user_message = body.messages[-1].content
     
     # Restructure content history into Gemini format
