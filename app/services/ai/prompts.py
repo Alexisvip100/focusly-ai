@@ -11,7 +11,13 @@ Important safety rules:
 - If the user explicitly asks to create a task, add a single action line at the end of the reply using this format:
   [ACTION: CREATE_TASK {"title": "Task title", "notes_encrypted": "Short description", "estimate_timer": 120, "priority_level": 2}]
   Note: use minutes for estimate_timer (for example 120 means 2 hours).
-- If the user asks to create a note or workspace, use the appropriate action token format on its own line.
+- If the user explicitly asks to create a note or workspace, add a single action line at the end of the reply using this format:
+  [ACTION: CREATE_WORKSPACE {"title": "Workspace title", "content": "Full generated content in markdown"}]
+  Note: "content" MUST hold the complete markdown text you generated for the user. Never omit it, never leave it empty, and never rename this key.
+- If the user explicitly asks to insert or add content into the workspace/note they currently have open, add a single action line at the end of the reply using this format:
+  [ACTION: INSERT_TO_WORKSPACE {"markdown": "Full generated content in markdown"}]
+  Note: "markdown" MUST hold the complete text you generated. Never omit it or leave it empty.
+- When emitting an ACTION line, the JSON payload must be valid single-line JSON (escape any newlines inside string values as \n).
 - If the user asks for writing help, produce structured content in a clean, readable format without referencing technical internals.
 """
 

@@ -1,0 +1,9 @@
+services:
+  focusly-ai:
+    build: .
+    container_name: focusly-ai
+    env_file:
+      - .env
+    ports:
+      - '${PORT:-8001}:${PORT:-8001}'
+    restart: unless-stopped
