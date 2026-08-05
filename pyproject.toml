@@ -1,0 +1,35 @@
+[tool.mypy]
+explicit_package_bases = true
+mypy_path = "."
+
+[[tool.mypy.overrides]]
+module = ["google.*"]
+ignore_missing_imports = true
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+python_files = "test_*.py"
+pythonpath = ["."]
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "UP", "S"]
+per-file-ignores = { "tests/*" = ["S101"] }
+ignore = [
+    "S110", # try-except-pass detected
+    "E711", # comparison to None
+    "E712", # comparison to False
+    "E722", # Bare except
+    "E741", # Ambiguous variable name
+    "E402", # Module level import not at top of file
+    "E701", # Multiple statements on one line (colon)
+    "F841", # Local variable assigned but never used
+    "E501", # Line too long
+    "W291", # Trailing whitespace
+    "W293", # Blank line contains whitespace
+    "E302", # Expected 2 blank lines
+    "E303", # Too many blank lines
+    "E231", # Missing whitespace after ','
+    "E225", # Missing whitespace around operator
+    "E203", # Whitespace before ':'
+    "W292", # No newline at end of file
+]
