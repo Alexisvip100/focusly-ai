@@ -1,5 +1,5 @@
 import os
-from typing import List, Dict, Any, Optional
+from typing import Any
 from pydantic import BaseModel
 from google import genai
 from google.genai import types
@@ -17,51 +17,62 @@ from app.services.ai.prompts import (
 
 # ─── Pydantic schemas for Gemini Structured Output ──────────────────────────────
 
+
 class TaskPlanItem(BaseModel):
     taskId: str
     recommendedPriority: str  # HIGH, MEDIUM, LOW
     suggestedOrder: int
     reason: str
-    suggestedDate: Optional[str] = None
-    estimatedTime: Optional[str] = None
+    suggestedDate: str | None = None
+    estimatedTime: str | None = None
+
 
 class TasksOrganizeResponse(BaseModel):
-    plan: List[TaskPlanItem]
+    plan: list[TaskPlanItem]
+
 
 class TimeBlockItem(BaseModel):
-    taskId: Optional[str] = None
+    taskId: str | None = None
     title: str
     startTime: str  # ISO-8601 string
-    endTime: str    # ISO-8601 string
+    endTime: str  # ISO-8601 string
     reason: str
 
+
 class CalendarPlannerResponse(BaseModel):
-    events: List[TimeBlockItem]
+    events: list[TimeBlockItem]
+
 
 class WeeklyPlanDayItem(BaseModel):
     day: str  # Monday, Tuesday, Wednesday, Thursday, Friday, Saturday, Sunday
-    tasks: List[str]
+    tasks: list[str]
+
 
 class WeeklyPlanResponse(BaseModel):
-    weeklyPlan: List[WeeklyPlanDayItem]
+    weeklyPlan: list[WeeklyPlanDayItem]
     recommendationSummary: str
 
+
 class SubtasksResponse(BaseModel):
-    subtasks: List[str]
+    subtasks: list[str]
+
 
 class EstimatedTimeResponse(BaseModel):
     estimatedTime: str
 
+
 class SuggestedPriorityResponse(BaseModel):
     suggestedPriority: str  # HIGH, MEDIUM, LOW
 
+
 class ImproveAllResponse(BaseModel):
-    subtasks: List[str]
+    subtasks: list[str]
     estimatedTime: str
     suggestedPriority: str
 
 
 # ─── Service Class ─────────────────────────────────────────────────────────────
+
 
 class AIPlannerService:
     def __init__(self):
@@ -73,11 +84,13 @@ class AIPlannerService:
         self.client = genai.Client(api_key=api_key)
         self.model = "gemini-2.5-flash"
 
-    async def organize_tasks(self, tasks: List[Dict[str, Any]]) -> TasksOrganizeResponse:
+    async def organize_tasks(
+        self, tasks: list[dict[str, Any]]
+    ) -> TasksOrganizeResponse:
         tasks_context = ""
         for i, t in enumerate(tasks):
             tasks_context += (
-                f"- Task #{i+1} ID: {t.get('id')}\n"
+                f"- Task #{i + 1} ID: {t.get('id')}\n"
                 f"  Title: {t.get('title')}\n"
                 f"  Description: {t.get('description') or 'No description'}\n"
                 f"  Current Priority: {t.get('priority') or 'N/A'}\n"
@@ -97,19 +110,25 @@ class AIPlannerService:
         return TasksOrganizeResponse.model_validate_json(response.text)
 
     async def ai_calendar_planner(
-        self, tasks: List[Dict[str, Any]], free_slots: List[Dict[str, Any]]
+        self, tasks: list[dict[str, Any]], free_slots: list[dict[str, Any]]
     ) -> CalendarPlannerResponse:
-        tasks_context = "\n".join([
-            f"- ID: {t.get('id')} | Title: {t.get('title')} | Duration: {t.get('duration') or '30 mins'} | Priority: {t.get('priority')}"
-            for t in tasks
-        ])
-        
-        slots_context = "\n".join([
-            f"- Available Slot: {s.get('start')} to {s.get('end')}"
-            for s in free_slots
-        ])
+        tasks_context = "\n".join(
+            [
+                f"- ID: {t.get('id')} | Title: {t.get('title')} | Duration: {t.get('duration') or '30 mins'} | Priority: {t.get('priority')}"
+                for t in tasks
+            ]
+        )
 
-        prompt = PLANNER_CALENDAR_PROMPT.format(tasks_context=tasks_context, slots_context=slots_context)
+        slots_context = "\n".join(
+            [
+                f"- Available Slot: {s.get('start')} to {s.get('end')}"
+                for s in free_slots
+            ]
+        )
+
+        prompt = PLANNER_CALENDAR_PROMPT.format(
+            tasks_context=tasks_context, slots_context=slots_context
+        )
         response = self.client.models.generate_content(
             model=self.model,
             contents=prompt,
@@ -120,14 +139,18 @@ class AIPlannerService:
         return CalendarPlannerResponse.model_validate_json(response.text)
 
     async def weekly_planner(
-        self, tasks: List[Dict[str, Any]], availability: Dict[str, Any]
+        self, tasks: list[dict[str, Any]], availability: dict[str, Any]
     ) -> WeeklyPlanResponse:
-        tasks_context = "\n".join([
-            f"- Title: {t.get('title')} | Priority: {t.get('priority')} | Deadline: {t.get('deadline')}"
-            for t in tasks
-        ])
+        tasks_context = "\n".join(
+            [
+                f"- Title: {t.get('title')} | Priority: {t.get('priority')} | Deadline: {t.get('deadline')}"
+                for t in tasks
+            ]
+        )
 
-        prompt = PLANNER_WEEKLY_PROMPT.format(tasks_context=tasks_context, availability=availability)
+        prompt = PLANNER_WEEKLY_PROMPT.format(
+            tasks_context=tasks_context, availability=availability
+        )
         response = self.client.models.generate_content(
             model=self.model,
             contents=prompt,
@@ -137,13 +160,15 @@ class AIPlannerService:
         )
         return WeeklyPlanResponse.model_validate_json(response.text)
 
-    async def task_improve(
-        self, title: str, description: str, mode: str
-    ) -> Any:
-        desc_info = f"Description: {description}" if description else "No description provided."
-        
+    async def task_improve(self, title: str, description: str, mode: str) -> Any:
+        desc_info = (
+            f"Description: {description}" if description else "No description provided."
+        )
+
         if mode == "subtasks":
-            prompt = PLANNER_IMPROVE_SUBTASKS_PROMPT.format(title=title, description=desc_info)
+            prompt = PLANNER_IMPROVE_SUBTASKS_PROMPT.format(
+                title=title, description=desc_info
+            )
             response = self.client.models.generate_content(
                 model=self.model,
                 contents=prompt,
@@ -155,7 +180,9 @@ class AIPlannerService:
             return SubtasksResponse.model_validate_json(response.text)
 
         elif mode == "estimate":
-            prompt = PLANNER_IMPROVE_ESTIMATE_PROMPT.format(title=title, description=desc_info)
+            prompt = PLANNER_IMPROVE_ESTIMATE_PROMPT.format(
+                title=title, description=desc_info
+            )
             response = self.client.models.generate_content(
                 model=self.model,
                 contents=prompt,
@@ -167,7 +194,9 @@ class AIPlannerService:
             return EstimatedTimeResponse.model_validate_json(response.text)
 
         elif mode == "priority":
-            prompt = PLANNER_IMPROVE_PRIORITY_PROMPT.format(title=title, description=desc_info)
+            prompt = PLANNER_IMPROVE_PRIORITY_PROMPT.format(
+                title=title, description=desc_info
+            )
             response = self.client.models.generate_content(
                 model=self.model,
                 contents=prompt,
@@ -179,7 +208,9 @@ class AIPlannerService:
             return SuggestedPriorityResponse.model_validate_json(response.text)
 
         else:  # mode == "all"
-            prompt = PLANNER_IMPROVE_ALL_PROMPT.format(title=title, description=desc_info)
+            prompt = PLANNER_IMPROVE_ALL_PROMPT.format(
+                title=title, description=desc_info
+            )
             response = self.client.models.generate_content(
                 model=self.model,
                 contents=prompt,

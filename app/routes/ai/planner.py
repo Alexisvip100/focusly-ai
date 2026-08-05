@@ -1,5 +1,4 @@
 from fastapi import APIRouter, Depends, HTTPException
-from typing import List, Dict, Any, Optional
 from pydantic import BaseModel
 
 from app.services.ai.planner import (
@@ -11,28 +10,36 @@ from app.services.ai.planner import (
 
 router = APIRouter(prefix="/planner", tags=["planner"])
 
+
 def get_planner_service() -> AIPlannerService:
     return AIPlannerService()
 
+
 # ─── Request Schemas ───────────────────────────────────────────────────────────
 
+
 class OrganizeTasksRequest(BaseModel):
-    tasks: List[Dict[str, Any]]
+    tasks: list[dict[str, object]]
+
 
 class CalendarPlannerRequest(BaseModel):
-    tasks: List[Dict[str, Any]]
-    free_slots: List[Dict[str, Any]]
+    tasks: list[dict[str, object]]
+    free_slots: list[dict[str, object]]
+
 
 class WeeklyPlannerRequest(BaseModel):
-    tasks: List[Dict[str, Any]]
-    availability: Optional[Dict[str, Any]] = None
+    tasks: list[dict[str, object]]
+    availability: dict[str, object] | None = None
+
 
 class TaskImproveRequest(BaseModel):
     title: str
-    description: Optional[str] = ""
+    description: str | None = ""
     mode: str  # subtasks, estimate, priority, all
 
+
 # ─── Endpoints ─────────────────────────────────────────────────────────────────
+
 
 @router.post("/organize", response_model=TasksOrganizeResponse)
 async def organize_tasks(
@@ -43,7 +50,10 @@ async def organize_tasks(
         plan = await planner.organize_tasks(body.tasks)
         return plan
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Failed to organize tasks: {str(e)}")
+        raise HTTPException(
+            status_code=500, detail=f"Failed to organize tasks: {str(e)}"
+        )
+
 
 @router.post("/calendar", response_model=CalendarPlannerResponse)
 async def calendar_planner(
@@ -54,7 +64,10 @@ async def calendar_planner(
         plan = await planner.ai_calendar_planner(body.tasks, body.free_slots)
         return plan
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Failed to plan calendar events: {str(e)}")
+        raise HTTPException(
+            status_code=500, detail=f"Failed to plan calendar events: {str(e)}"
+        )
+
 
 @router.post("/weekly", response_model=WeeklyPlanResponse)
 async def weekly_planner(
@@ -66,7 +79,10 @@ async def weekly_planner(
         plan = await planner.weekly_planner(body.tasks, availability)
         return plan
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Failed to generate weekly plan: {str(e)}")
+        raise HTTPException(
+            status_code=500, detail=f"Failed to generate weekly plan: {str(e)}"
+        )
+
 
 @router.post("/improve")
 async def task_improve(
@@ -74,7 +90,11 @@ async def task_improve(
     planner: AIPlannerService = Depends(get_planner_service),
 ):
     try:
-        result = await planner.task_improve(body.title, body.description, body.mode)
+        result = await planner.task_improve(
+            body.title, body.description or "", body.mode
+        )
         return result
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Failed to suggest task improvements: {str(e)}")
+        raise HTTPException(
+            status_code=500, detail=f"Failed to suggest task improvements: {str(e)}"
+        )

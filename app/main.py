@@ -7,7 +7,7 @@ from app.routes.ai.planner import router as planner_router
 app = FastAPI(
     title="Focusly AI Microservice",
     description="Stateless microservice hosting Gemini capabilities and productivity planners.",
-    version="1.0.0"
+    version="1.0.0",
 )
 
 # CORS configuration
@@ -23,10 +23,7 @@ app.add_middleware(
 app.include_router(ai_router, prefix="/ai")
 app.include_router(planner_router, prefix="/ai")
 
+
 @app.get("/")
 async def health_check():
-    return {
-        "status": "healthy",
-        "service": "focusly-ai",
-        "version": "1.0.0"
-    }
+    return {"status": "healthy", "service": "focusly-ai", "version": "1.0.0"}
