@@ -27,3 +27,7 @@ app.include_router(planner_router, prefix="/ai")
 @app.get("/")
 async def health_check():
     return {"status": "healthy", "service": "focusly-ai", "version": "1.0.0"}
+
+@app.get("/health")
+def health():
+    return {"status": "ok"}
