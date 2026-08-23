@@ -153,7 +153,11 @@ async def stream_claude(payload: dict):
                 "POST", url, headers=headers, json=payload, timeout=60.0
             ) as r:
                 if r.status_code != 200:
-                    await r.aread()
+                    error_body = await r.aread()
+                    print(
+                        f"[stream_claude] non-200 from Anthropic: {r.status_code} - {error_body.decode('utf-8', errors='ignore')}",
+                        flush=True,
+                    )
                     if r.status_code == 429:
                         yield "Lumina ha alcanzado el límite de consultas permitidas por hoy. ⏳ Por favor, dale un respiro e intenta de nuevo en unos minutos. ¡Volveré pronto para ayudarte! 🌟"
                     elif r.status_code == 503:
@@ -173,9 +177,15 @@ async def stream_claude(payload: dict):
                                 text = data.get("delta", {}).get("text", "")
                                 if text:
                                     yield text
+                            elif data.get("type") == "error":
+                                print(
+                                    f"[stream_claude] API error event: {data}",
+                                    flush=True,
+                                )
                         except Exception:
                             pass
         except Exception as e:
+            print(f"[stream_claude] exception: {e!r}", flush=True)
             yield "\nLumina ha experimentado un problema técnico temporal al procesar tu solicitud. 🛠️ Por favor, intenta de nuevo en un momento."
 
 
