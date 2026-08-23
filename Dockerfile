@@ -1,5 +1,9 @@
 FROM python:3.11-slim
 
+# Unbuffered stdout/stderr so `docker logs` shows print()/log output
+# immediately instead of sitting in a block buffer until it fills up.
+ENV PYTHONUNBUFFERED=1
+
 WORKDIR /app
 
 # Install system dependencies

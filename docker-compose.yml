@@ -7,3 +7,10 @@ services:
     ports:
       - '${PORT:-8001}:${PORT:-8001}'
     restart: unless-stopped
+    networks:
+      - default
+      - focusly-net
+
+networks:
+  focusly-net:
+    external: true
