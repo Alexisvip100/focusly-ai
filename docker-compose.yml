@@ -6,6 +6,8 @@ services:
       - .env
     ports:
       - '${PORT:-8001}:${PORT:-8001}'
+    volumes:
+      - .:/app
     restart: unless-stopped
     networks:
       - default

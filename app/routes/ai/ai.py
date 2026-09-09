@@ -106,10 +106,10 @@ async def stream_gemini(payload: dict, model: str):
         yield "Error: GEMINI_API_KEY is not configured in focusly-ai settings."
         return
 
-    # Map Claude models to Gemini defaults in case of fallback to Gemini endpoint
+    # Map Claude models or legacy models to Gemini 2.5 flash
     model_lower = (model or "").lower()
-    if "claude" in model_lower:
-        model = "gemini-2.5-flash-lite"
+    if "claude" in model_lower or "2.0-flash" in model_lower:
+        model = "gemini-2.5-flash"
 
     url = f"https://generativelanguage.googleapis.com/v1beta/models/{model}:streamGenerateContent?key={api_key}"
     parser = GeminiStreamParser()
@@ -197,62 +197,121 @@ async def chat_endpoint(body: ChatRequestSchema):
     if not body.messages:
         raise HTTPException(status_code=400, detail="Messages array cannot be empty")
 
-    # Check if we should use Anthropic Claude (local only)
-    if settings.ANTHROPIC_API_KEY:
-        claude_messages = []
-        for m in body.messages:
-            claude_messages.append(
+    async def stream_chat():
+        # 1. Try Claude if ANTHROPIC_API_KEY is configured
+        fallback_to_gemini = False
+        if settings.ANTHROPIC_API_KEY:
+            claude_messages = []
+            for m in body.messages:
+                claude_messages.append(
+                    {
+                        "role": "user" if m.role == "user" else "assistant",
+                        "content": m.content,
+                    }
+                )
+
+            # Map model identifiers dynamically to supported ones
+            model_lower = (body.model or "").lower()
+            if "haiku" in model_lower:
+                selected_model = "claude-3-5-haiku-20241022"
+            elif "opus" in model_lower:
+                selected_model = "claude-3-opus-20240229"
+            else:
+                selected_model = "claude-3-5-sonnet-20241022"
+
+            payload = {
+                "model": selected_model,
+                "max_tokens": 4000,
+                "system": body.system_context,
+                "messages": claude_messages,
+                "stream": True,
+            }
+
+            url = "https://api.anthropic.com/v1/messages"
+            headers = {
+                "x-api-key": settings.ANTHROPIC_API_KEY,
+                "anthropic-version": "2023-06-01",
+                "content-type": "application/json",
+            }
+
+            streamed_any = False
+            try:
+                async with httpx.AsyncClient() as client:
+                    async with client.stream(
+                        "POST", url, headers=headers, json=payload, timeout=60.0
+                    ) as r:
+                        if r.status_code != 200:
+                            error_body = await r.aread()
+                            print(
+                                f"[stream_claude] non-200 from Anthropic: {r.status_code} - {error_body.decode('utf-8', errors='ignore')}. Falling back to Gemini...",
+                                flush=True,
+                            )
+                            fallback_to_gemini = True
+                        else:
+                            async for line in r.aiter_lines():
+                                if line.startswith("data:"):
+                                    data_str = line[5:].strip()
+                                    if data_str == "[DONE]":
+                                        break
+                                    try:
+                                        data = json.loads(data_str)
+                                        if data.get("type") == "content_block_delta":
+                                            text = data.get("delta", {}).get("text", "")
+                                            if text:
+                                                streamed_any = True
+                                                yield text
+                                        elif data.get("type") == "error":
+                                            print(
+                                                f"[stream_claude] API error event: {data}",
+                                                flush=True,
+                                            )
+                                    except Exception:
+                                        pass
+                            return
+            except Exception as e:
+                print(f"[stream_claude] exception: {e!r}. Falling back to Gemini...", flush=True)
+                if not streamed_any:
+                    fallback_to_gemini = True
+                else:
+                    yield "\nLumina ha experimentado un problema técnico temporal al procesar tu solicitud. 🛠️ Por favor, intenta de nuevo en un momento."
+                    return
+
+            if not fallback_to_gemini:
+                return
+
+        # 2. Fallback to Gemini
+        api_key = settings.GOOGLE_GENERATIVE_AI_API_KEY
+        if not api_key:
+            yield "Error: No AI provider (Claude or Gemini) is properly configured in focusly-ai."
+            return
+
+        latest_user_message = body.messages[-1].content
+
+        gemini_contents = []
+        for m in body.messages[:-1]:
+            gemini_contents.append(
                 {
-                    "role": "user" if m.role == "user" else "assistant",
-                    "content": m.content,
+                    "role": "user" if m.role == "user" else "model",
+                    "parts": [{"text": m.content}],
                 }
             )
 
-        # Map model identifiers dynamically to supported ones
-        model_lower = (body.model or "").lower()
-        if "sonnet" in model_lower:
-            selected_model = "claude-sonnet-5"
-        elif "haiku" in model_lower:
-            selected_model = "claude-haiku-4-5-20251001"
-        elif "opus" in model_lower:
-            selected_model = "claude-opus-4-8"
-        else:
-            selected_model = "claude-sonnet-5"
+        gemini_contents.append({"role": "user", "parts": [{"text": latest_user_message}]})
 
-        payload = {
-            "model": selected_model,
-            "max_tokens": 4000,
-            "system": body.system_context,
-            "messages": claude_messages,
-            "stream": True,
+        gemini_payload = {
+            "contents": gemini_contents,
+            "systemInstruction": {"parts": [{"text": body.system_context}]},
         }
-        return StreamingResponse(stream_claude(payload), media_type="text/plain")
 
-    # Fallback to Gemini (production standard)
-    latest_user_message = body.messages[-1].content
+        model = body.model or "gemini-2.5-flash"
+        model_lower = model.lower()
+        if "claude" in model_lower or "2.0-flash" in model_lower:
+            model = "gemini-2.5-flash"
 
-    # Restructure content history into Gemini format
-    gemini_contents = []
-    for m in body.messages[:-1]:
-        gemini_contents.append(
-            {
-                "role": "user" if m.role == "user" else "model",
-                "parts": [{"text": m.content}],
-            }
-        )
+        async for chunk in stream_gemini(gemini_payload, model):
+            yield chunk
 
-    # Append latest user message
-    gemini_contents.append({"role": "user", "parts": [{"text": latest_user_message}]})
-
-    payload = {
-        "contents": gemini_contents,
-        "systemInstruction": {"parts": [{"text": body.system_context}]},
-    }
-
-    return StreamingResponse(
-        stream_gemini(payload, body.model or "gemini-2.5-flash-lite"),
-        media_type="text/plain",
-    )
+    return StreamingResponse(stream_chat(), media_type="text/plain")
 
 
 @router.post("/analyze-patterns")
