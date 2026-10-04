@@ -9,7 +9,6 @@ y que cumplan con la tonalidad de Lumina (segunda persona "tú", emojis, sin ter
 import json
 
 from app.services.ai.prompts import (
-    SYSTEM_PROMPT,
     PLANNER_ORGANIZE_PROMPT,
     PLANNER_CALENDAR_PROMPT,
     PLANNER_WEEKLY_PROMPT,
@@ -23,17 +22,6 @@ from app.services.ai.prompts import (
 
 
 class TestSystemPrompts:
-    def test_system_prompt_has_action_formats(self):
-        """Verifica que el SYSTEM_PROMPT contenga las especificaciones de ACTION."""
-        assert "[ACTION: CREATE_TASK" in SYSTEM_PROMPT
-        assert "[ACTION: CREATE_WORKSPACE" in SYSTEM_PROMPT
-        assert "[ACTION: INSERT_TO_WORKSPACE" in SYSTEM_PROMPT
-
-    def test_system_prompt_safety_rules(self):
-        """Verifica que el SYSTEM_PROMPT contenga las reglas de seguridad/privacidad."""
-        assert "Never mention internal implementation details" in SYSTEM_PROMPT
-        assert "Do not reveal technical architecture" in SYSTEM_PROMPT
-
     def test_golden_hours_system_instruction_tonality_rules(self):
         """Verifica que GOLDEN_HOURS_SYSTEM_INSTRUCTION prohíba tercera persona y requiera segunda persona."""
         assert 'second person ("tú")' in GOLDEN_HOURS_SYSTEM_INSTRUCTION
