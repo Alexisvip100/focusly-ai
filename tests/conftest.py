@@ -6,7 +6,7 @@ factorías de datos reutilizables en toda la suite.
 """
 
 import pytest
-from unittest.mock import MagicMock
+from unittest.mock import AsyncMock, MagicMock
 from fastapi.testclient import TestClient
 
 from app.main import app
@@ -22,6 +22,13 @@ def client() -> TestClient:
 
 
 # ─── Settings mocks ────────────────────────────────────────────────────────────
+
+
+@pytest.fixture(autouse=True)
+def no_internal_token(monkeypatch):
+    """The routes are open in tests unless a test sets the token (a local .env
+    may define FOCUSLY_AI_INTERNAL_TOKEN)."""
+    monkeypatch.setattr("app.security.settings.INTERNAL_TOKEN", "")
 
 
 @pytest.fixture
@@ -207,13 +214,13 @@ def make_gemini_weekly_response() -> str:
 
 
 def make_gemini_mock_client(response_text: str) -> MagicMock:
-    """Crea un mock del cliente Gemini con .models.generate_content."""
+    """Crea un mock del cliente Gemini con .aio.models.generate_content."""
     mock_response = MagicMock()
     mock_response.text = response_text
 
     mock_models = MagicMock()
-    mock_models.generate_content.return_value = mock_response
+    mock_models.generate_content = AsyncMock(return_value=mock_response)
 
     mock_client = MagicMock()
-    mock_client.models = mock_models
+    mock_client.aio.models = mock_models
     return mock_client

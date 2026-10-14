@@ -1,3 +1,4 @@
+import asyncio
 import os
 from typing import Any
 from pydantic import BaseModel
@@ -5,6 +6,7 @@ from google import genai
 from google.genai import types
 
 from app.config import settings
+from app.services.ai.models import light_model, sdk_thinking_config, strong_model
 from app.services.ai.prompts import (
     PLANNER_ORGANIZE_PROMPT,
     PLANNER_CALENDAR_PROMPT,
@@ -82,7 +84,33 @@ class AIPlannerService:
             or os.environ.get("GOOGLE_GENERATIVE_AI_API_KEY")
         )
         self.client = genai.Client(api_key=api_key)
-        self.model = "gemini-2.5-flash"
+        # Planning (order, time blocks, the week) needs some reasoning.
+        self.model = strong_model()
+        # Subtasks, an estimate or a priority for one task don't.
+        self.light_model = light_model()
+
+    async def _generate(
+        self, prompt: str, schema: type[BaseModel], *, light: bool = False
+    ):
+        """One JSON answer from Gemini, without blocking the event loop and
+        with the thinking (billed as output) capped."""
+        model = self.light_model if light else self.model
+        config = types.GenerateContentConfig(
+            response_mime_type="application/json",
+            response_schema=schema,
+            max_output_tokens=settings.MAX_OUTPUT_TOKENS,
+            thinking_config=types.ThinkingConfig(
+                **sdk_thinking_config(model, structured=True)
+            ),
+        )
+        return await asyncio.wait_for(
+            self.client.aio.models.generate_content(
+                model=model,
+                contents=prompt,
+                config=config,
+            ),
+            timeout=settings.REQUEST_TIMEOUT_SECONDS,
+        )
 
     async def organize_tasks(
         self, tasks: list[dict[str, Any]]
@@ -100,13 +128,7 @@ class AIPlannerService:
             )
 
         prompt = PLANNER_ORGANIZE_PROMPT.format(tasks_context=tasks_context)
-        response = self.client.models.generate_content(
-            model=self.model,
-            contents=prompt,
-            config=types.GenerateContentConfig(
-                response_mime_type="application/json",
-            ),
-        )
+        response = await self._generate(prompt, TasksOrganizeResponse)
         return TasksOrganizeResponse.model_validate_json(response.text)
 
     async def ai_calendar_planner(
@@ -115,6 +137,7 @@ class AIPlannerService:
         tasks_context = "\n".join(
             [
                 f"- ID: {t.get('id')} | Title: {t.get('title')} | Duration: {t.get('duration') or '30 mins'} | Priority: {t.get('priority')}"
+                + (f" | Deadline: {t['deadline']}" if t.get("deadline") else "")
                 for t in tasks
             ]
         )
@@ -129,13 +152,7 @@ class AIPlannerService:
         prompt = PLANNER_CALENDAR_PROMPT.format(
             tasks_context=tasks_context, slots_context=slots_context
         )
-        response = self.client.models.generate_content(
-            model=self.model,
-            contents=prompt,
-            config=types.GenerateContentConfig(
-                response_mime_type="application/json",
-            ),
-        )
+        response = await self._generate(prompt, CalendarPlannerResponse)
         return CalendarPlannerResponse.model_validate_json(response.text)
 
     async def weekly_planner(
@@ -151,13 +168,7 @@ class AIPlannerService:
         prompt = PLANNER_WEEKLY_PROMPT.format(
             tasks_context=tasks_context, availability=availability
         )
-        response = self.client.models.generate_content(
-            model=self.model,
-            contents=prompt,
-            config=types.GenerateContentConfig(
-                response_mime_type="application/json",
-            ),
-        )
+        response = await self._generate(prompt, WeeklyPlanResponse)
         return WeeklyPlanResponse.model_validate_json(response.text)
 
     async def task_improve(self, title: str, description: str, mode: str) -> Any:
@@ -169,41 +180,22 @@ class AIPlannerService:
             prompt = PLANNER_IMPROVE_SUBTASKS_PROMPT.format(
                 title=title, description=desc_info
             )
-            response = self.client.models.generate_content(
-                model=self.model,
-                contents=prompt,
-                config=types.GenerateContentConfig(
-                    response_mime_type="application/json",
-                    response_schema=SubtasksResponse,
-                ),
-            )
+            response = await self._generate(prompt, SubtasksResponse, light=True)
             return SubtasksResponse.model_validate_json(response.text)
 
         elif mode == "estimate":
             prompt = PLANNER_IMPROVE_ESTIMATE_PROMPT.format(
                 title=title, description=desc_info
             )
-            response = self.client.models.generate_content(
-                model=self.model,
-                contents=prompt,
-                config=types.GenerateContentConfig(
-                    response_mime_type="application/json",
-                    response_schema=EstimatedTimeResponse,
-                ),
-            )
+            response = await self._generate(prompt, EstimatedTimeResponse, light=True)
             return EstimatedTimeResponse.model_validate_json(response.text)
 
         elif mode == "priority":
             prompt = PLANNER_IMPROVE_PRIORITY_PROMPT.format(
                 title=title, description=desc_info
             )
-            response = self.client.models.generate_content(
-                model=self.model,
-                contents=prompt,
-                config=types.GenerateContentConfig(
-                    response_mime_type="application/json",
-                    response_schema=SuggestedPriorityResponse,
-                ),
+            response = await self._generate(
+                prompt, SuggestedPriorityResponse, light=True
             )
             return SuggestedPriorityResponse.model_validate_json(response.text)
 
@@ -211,12 +203,5 @@ class AIPlannerService:
             prompt = PLANNER_IMPROVE_ALL_PROMPT.format(
                 title=title, description=desc_info
             )
-            response = self.client.models.generate_content(
-                model=self.model,
-                contents=prompt,
-                config=types.GenerateContentConfig(
-                    response_mime_type="application/json",
-                    response_schema=ImproveAllResponse,
-                ),
-            )
+            response = await self._generate(prompt, ImproveAllResponse, light=True)
             return ImproveAllResponse.model_validate_json(response.text)

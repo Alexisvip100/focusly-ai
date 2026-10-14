@@ -1,8 +1,9 @@
-from fastapi import FastAPI
+from fastapi import Depends, FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from app.routes.ai.ai import router as ai_router
 from app.routes.ai.planner import router as planner_router
+from app.security import require_internal_token
 
 app = FastAPI(
     title="Focusly AI Microservice",
@@ -19,9 +20,13 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# Include Routers
-app.include_router(ai_router, prefix="/ai")
-app.include_router(planner_router, prefix="/ai")
+# Include Routers (health checks stay public; the AI endpoints don't)
+app.include_router(
+    ai_router, prefix="/ai", dependencies=[Depends(require_internal_token)]
+)
+app.include_router(
+    planner_router, prefix="/ai", dependencies=[Depends(require_internal_token)]
+)
 
 
 @app.get("/")

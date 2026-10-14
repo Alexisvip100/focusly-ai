@@ -126,7 +126,7 @@ class TestOrganizeTasksSuccess:
         with patch("app.services.ai.planner.genai.Client", return_value=mock_client):
             client.post("/ai/planner/organize", json={"tasks": sample_tasks})
 
-        call_kwargs = mock_client.models.generate_content.call_args[1]
+        call_kwargs = mock_client.aio.models.generate_content.call_args[1]
         assert call_kwargs["config"].response_mime_type == "application/json"
 
     def test_gemini_sdk_called_with_correct_model(
@@ -138,7 +138,7 @@ class TestOrganizeTasksSuccess:
         with patch("app.services.ai.planner.genai.Client", return_value=mock_client):
             client.post("/ai/planner/organize", json={"tasks": sample_tasks})
 
-        call_kwargs = mock_client.models.generate_content.call_args[1]
+        call_kwargs = mock_client.aio.models.generate_content.call_args[1]
         assert call_kwargs["model"] == "gemini-2.5-flash"
 
     def test_large_task_list_is_handled(self, client: TestClient):
@@ -361,7 +361,7 @@ class TestWeeklyPlannerSuccess:
 
         assert response.status_code == 200
         # Verificar que generate_content fue llamado con availability en el prompt
-        call_kwargs = mock_client.models.generate_content.call_args[1]
+        call_kwargs = mock_client.aio.models.generate_content.call_args[1]
         assert "08:00 - 12:00" in call_kwargs["contents"]
 
 

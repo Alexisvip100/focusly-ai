@@ -6,6 +6,7 @@ Estrategia: mock de httpx y settings para aislar la lógica
 de routing/serialización de las llamadas reales a la API.
 """
 
+from app.config import settings
 import json
 from unittest.mock import AsyncMock, MagicMock, patch
 from fastapi.testclient import TestClient
@@ -79,7 +80,7 @@ class TestChatRequestValidation:
             assert response.status_code == 200
 
     def test_model_field_defaults_to_gemini(self, client: TestClient, gemini_settings):
-        """Sin campo model, debe usar gemini-2.5-flash-lite."""
+        """Sin campo model, debe usar el modelo ligero."""
         captured_model = []
 
         async def mock_stream(payload, model):
@@ -94,10 +95,10 @@ class TestChatRequestValidation:
                     "system_context": "ctx",
                 },
             )
-        assert captured_model[0] == "gemini-2.5-flash-lite"
+        assert captured_model[0] == settings.GEMINI_LIGHT_MODEL
 
     def test_model_none_uses_default(self, client: TestClient, gemini_settings):
-        """model: null debe caer en el fallback gemini-2.5-flash-lite."""
+        """model: null debe caer en el modelo ligero."""
         captured_model = []
 
         async def mock_stream(payload, model):
@@ -113,7 +114,7 @@ class TestChatRequestValidation:
                     "model": None,
                 },
             )
-        assert captured_model[0] == "gemini-2.5-flash-lite"
+        assert captured_model[0] == settings.GEMINI_LIGHT_MODEL
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -282,7 +283,7 @@ class TestChatClaudeBehavior:
                     "model": "sonnet",
                 },
             )
-        assert captured[0]["model"] == "claude-sonnet-5"
+        assert captured[0]["model"] == "claude-sonnet-5-5"
 
     def test_claude_model_haiku_mapping(self, client: TestClient, anthropic_settings):
         captured = []
@@ -318,7 +319,7 @@ class TestChatClaudeBehavior:
                     "model": "opus",
                 },
             )
-        assert captured[0]["model"] == "claude-opus-4-8"
+        assert captured[0]["model"] == "claude-opus-5-5"
 
     def test_claude_unknown_model_falls_back_to_sonnet(
         self, client: TestClient, anthropic_settings
@@ -338,7 +339,7 @@ class TestChatClaudeBehavior:
                     "model": "some-unknown-model",
                 },
             )
-        assert captured[0]["model"] == "claude-sonnet-5"
+        assert captured[0]["model"] == "claude-sonnet-5-5"
 
     def test_claude_payload_includes_stream_true(
         self, client: TestClient, anthropic_settings

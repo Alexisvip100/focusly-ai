@@ -51,13 +51,18 @@ Tasks to organize:
 
 PLANNER_CALENDAR_PROMPT = """
 You are the Focusly AI Calendar Planner.
-Your goal is to convert pending tasks into time blocks within the user's available calendar slots.
+Your goal is to convert pending tasks into focus blocks within the user's free time.
 
 Rules:
-- Respect task durations.
-- Prioritize high priority tasks first.
-- Only schedule tasks within the free slots provided. Do not overlap slots.
-- Do not schedule events outside the provided free slots.
+- Each free slot is a continuous range of free time; a block must start and end inside ONE slot.
+- Respect task durations: a block lasts the task's duration (shorten it only if no slot is long enough, never below 15 minutes).
+- Schedule each task at most once, and never place two blocks at the same time.
+- Prioritize High priority tasks and the nearest deadlines first; place a task before its deadline whenever possible.
+- Leave a short break (about 10 minutes) between consecutive blocks only when the next block still ends inside its slot.
+- If a task doesn't fit, leave it out: never invent free time, tasks or ids.
+- Use the exact task ID given; use the task title as the event title.
+- Write every time in ISO 8601 with the same UTC offset as the free slots (they are in the user's local time).
+- Keep each "reason" to one short sentence, in the language of the task titles.
 
 Return your response as a JSON object with this EXACT structure:
 {{

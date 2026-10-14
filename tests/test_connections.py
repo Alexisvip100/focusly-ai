@@ -150,7 +150,7 @@ class TestSettings:
             monkeypatch.setenv(key, value)
 
         # 3. Parchear load_dotenv para que no re-inyecte el .env durante el reload
-        with patch("app.config.load_dotenv", return_value=None):
+        with patch("dotenv.load_dotenv", return_value=None):
             import app.config as config_module
 
             importlib.reload(config_module)
@@ -308,7 +308,7 @@ class TestHttpxClientBehavior:
                 chunks.append(chunk)
             return chunks
 
-        result = asyncio.get_event_loop().run_until_complete(collect())
+        result = asyncio.run(collect())
         assert any("Error" in chunk or "GEMINI_API_KEY" in chunk for chunk in result)
 
     def test_stream_claude_no_api_key_yields_error(self, monkeypatch):
@@ -324,7 +324,7 @@ class TestHttpxClientBehavior:
                 chunks.append(chunk)
             return chunks
 
-        result = asyncio.get_event_loop().run_until_complete(collect())
+        result = asyncio.run(collect())
         assert any("Error" in chunk or "ANTHROPIC_API_KEY" in chunk for chunk in result)
 
     def test_stream_gemini_maps_claude_model_to_gemini(self, monkeypatch):

@@ -6,12 +6,27 @@ import httpx
 import json
 
 from app.config import settings
+from app.services.ai.models import (
+    is_light,
+    resolve_gemini_model,
+    thinking_config,
+)
 from app.services.ai.prompts import (
     GOLDEN_HOURS_SYSTEM_INSTRUCTION,
     GOLDEN_HOURS_USER_PROMPT,
 )
 
 router = APIRouter(tags=["ai"])
+
+# The reply text ends here when usage was requested: what follows the marker
+# (ASCII record separator, never in model text) is the usage JSON.
+USAGE_MARKER = "\x1e"
+
+CLAUDE_MODELS = {
+    "haiku": "claude-haiku-4-5-20251001",
+    "sonnet": "claude-sonnet-5-5",
+    "opus": "claude-opus-5-5",
+}
 
 # ─── Schemas ──────────────────────────────────────────────────────────────────
 
@@ -24,7 +39,12 @@ class MessageSchema(BaseModel):
 class ChatRequestSchema(BaseModel):
     messages: list[MessageSchema]
     system_context: str
-    model: str | None = "gemini-2.5-flash-lite"
+    model: str | None = None
+    # Ask for the token usage at the end of the stream, after USAGE_MARKER.
+    include_usage: bool = False
+    # system_context[:cache_prefix_chars] repeats between messages (the
+    # instructions, the user's tasks…); the rest changes (time, memories).
+    cache_prefix_chars: int | None = None
 
 
 class AnalyzePatternsRequest(BaseModel):
@@ -36,12 +56,40 @@ class AnalyzePatternsRequest(BaseModel):
     work_style_hint: str
 
 
+# ─── Models and generation settings ──────────────────────────────────────────
+
+
+def resolve_claude_model(model: str | None) -> str:
+    """A current Claude model for a requested name or Gemini tier."""
+    name = (model or "").lower()
+    if "opus" in name or name.endswith("-pro"):
+        return CLAUDE_MODELS["opus"]
+    if "haiku" in name or not name or is_light(name):
+        return CLAUDE_MODELS["haiku"]
+    return CLAUDE_MODELS["sonnet"]
+
+
+def gemini_generation_config(model: str, *, structured: bool = False) -> dict:
+    """Output cap plus a thinking cap: thinking is billed as output, and the
+    flash models think by default."""
+    return {
+        "maxOutputTokens": settings.MAX_OUTPUT_TOKENS,
+        "thinkingConfig": thinking_config(model, structured=structured),
+    }
+
+
+def usage_trailer(usage: dict) -> str:
+    return USAGE_MARKER + json.dumps(usage)
+
+
 # ─── Gemini Stream Parser ─────────────────────────────────────────────────────
 
 
 class GeminiStreamParser:
     def __init__(self):
         self.buffer = ""
+        # The last usageMetadata seen (Gemini sends it with the final chunk).
+        self.usage: dict[str, Any] | None = None
 
     def feed(self, chunk: str):
         self.buffer += chunk
@@ -83,13 +131,16 @@ class GeminiStreamParser:
                 self.buffer = self.buffer[end_idx + 1 :].lstrip("\r\n, ")
                 try:
                     obj = json.loads(obj_str)
+                    if obj.get("usageMetadata"):
+                        self.usage = obj["usageMetadata"]
                     candidates = obj.get("candidates", [])
                     if candidates:
                         content = candidates[0].get("content", {})
                         parts = content.get("parts", [])
-                        if parts:
-                            text = parts[0].get("text", "")
-                            if text:
+                        # Thought summaries (if any) are not part of the reply.
+                        for part in parts:
+                            text = part.get("text", "")
+                            if text and not part.get("thought"):
                                 yield text
                 except Exception:
                     pass
@@ -99,42 +150,77 @@ class GeminiStreamParser:
 
 # ─── Streaming Assistant ──────────────────────────────────────────────────────
 
+TOO_MANY_REQUESTS = "Lumina ha alcanzado el límite de consultas permitidas por hoy. ⏳ Por favor, dale un respiro e intenta de nuevo en unos minutos. ¡Volveré pronto para ayudarte! 🌟"
+OVERLOADED = "¡Hola! Lumina está recibiendo muchísimas consultas en este momento y está un poco ocupada. 📭 Por favor, intenta de nuevo en unos segundos. ¡Estaré lista para ti de inmediato! ☕"
+TEMPORARY_ERROR = "Lumina ha experimentado un problema técnico temporal al procesar tu solicitud. 🛠️ Por favor, intenta de nuevo en un momento. ¡Gracias por tu paciencia! ✨"
+STREAM_BROKEN = "\nLumina ha experimentado un problema técnico temporal al procesar tu solicitud. 🛠️ Por favor, intenta de nuevo en un momento."
 
-async def stream_gemini(payload: dict, model: str):
+
+def friendly_error(status_code: int) -> str:
+    if status_code == 429:
+        return TOO_MANY_REQUESTS
+    if status_code == 503:
+        return OVERLOADED
+    return TEMPORARY_ERROR
+
+
+# What stream_claude yields when it fails before answering.
+CLAUDE_FAILURES = {TOO_MANY_REQUESTS, OVERLOADED, TEMPORARY_ERROR}
+
+
+async def stream_gemini(payload: dict, model: str, usage: dict | None = None):
+    """Streams Gemini's reply text. When `usage` is given, it's filled with
+    the token counts once the stream ends."""
     api_key = settings.GOOGLE_GENERATIVE_AI_API_KEY
     if not api_key:
         yield "Error: GEMINI_API_KEY is not configured in focusly-ai settings."
         return
 
-    # Map Claude models or legacy models to Gemini 2.5 flash
-    model_lower = (model or "").lower()
-    if "claude" in model_lower or "2.0-flash" in model_lower:
-        model = "gemini-2.5-flash"
-
+    model = resolve_gemini_model(model)
     url = f"https://generativelanguage.googleapis.com/v1beta/models/{model}:streamGenerateContent?key={api_key}"
     parser = GeminiStreamParser()
 
     async with httpx.AsyncClient() as client:
         try:
-            async with client.stream("POST", url, json=payload, timeout=60.0) as r:
+            async with client.stream(
+                "POST", url, json=payload, timeout=settings.REQUEST_TIMEOUT_SECONDS
+            ) as r:
                 if r.status_code != 200:
-                    await r.aread()  # consume connection
-                    if r.status_code == 429:
-                        yield "Lumina ha alcanzado el límite de consultas permitidas por hoy. ⏳ Por favor, dale un respiro e intenta de nuevo en unos minutos. ¡Volveré pronto para ayudarte! 🌟"
-                    elif r.status_code == 503:
-                        yield "¡Hola! Lumina está recibiendo muchísimas consultas en este momento y está un poco ocupada. 📭 Por favor, intenta de nuevo en unos segundos. ¡Estaré lista para ti de inmediato! ☕"
-                    else:
-                        yield "Lumina ha experimentado un problema técnico temporal al procesar tu solicitud. 🛠️ Por favor, intenta de nuevo en un momento. ¡Gracias por tu paciencia! ✨"
+                    error_body = await r.aread()  # consume connection
+                    detail = (
+                        error_body.decode("utf-8", errors="ignore")[:500]
+                        if isinstance(error_body, bytes)
+                        else ""
+                    )
+                    print(
+                        f"[stream_gemini] {model} answered {r.status_code}: {detail}",
+                        flush=True,
+                    )
+                    yield friendly_error(r.status_code)
                     return
 
                 async for chunk in r.aiter_text():
                     for text in parser.feed(chunk):
                         yield text
-        except Exception as e:
-            yield "\nLumina ha experimentado un problema técnico temporal al procesar tu solicitud. 🛠️ Por favor, intenta de nuevo en un momento."
+        except Exception:
+            yield STREAM_BROKEN
+            return
+
+    if usage is not None and parser.usage:
+        u = parser.usage
+        usage.update(
+            provider="gemini",
+            model=model,
+            input=u.get("promptTokenCount", 0),
+            cached=u.get("cachedContentTokenCount", 0),
+            output=u.get("candidatesTokenCount", 0),
+            thoughts=u.get("thoughtsTokenCount", 0),
+        )
 
 
-async def stream_claude(payload: dict):
+async def stream_claude(payload: dict, usage: dict | None = None):
+    """Streams Claude's reply text. A failure before any text yields one of
+    CLAUDE_FAILURES (the caller may fall back to Gemini on it)."""
     api_key = settings.ANTHROPIC_API_KEY
     if not api_key:
         yield "Error: ANTHROPIC_API_KEY is not configured."
@@ -146,47 +232,115 @@ async def stream_claude(payload: dict):
         "anthropic-version": "2023-06-01",
         "content-type": "application/json",
     }
+    counts: dict[str, int] = {}
+    streamed_any = False
 
     async with httpx.AsyncClient() as client:
         try:
             async with client.stream(
-                "POST", url, headers=headers, json=payload, timeout=60.0
+                "POST",
+                url,
+                headers=headers,
+                json=payload,
+                timeout=settings.REQUEST_TIMEOUT_SECONDS,
             ) as r:
                 if r.status_code != 200:
                     error_body = await r.aread()
                     print(
-                        f"[stream_claude] non-200 from Anthropic: {r.status_code} - {error_body.decode('utf-8', errors='ignore')}",
+                        f"[stream_claude] non-200 from Anthropic: {r.status_code} - {(error_body or b'').decode('utf-8', errors='ignore')}",
                         flush=True,
                     )
-                    if r.status_code == 429:
-                        yield "Lumina ha alcanzado el límite de consultas permitidas por hoy. ⏳ Por favor, dale un respiro e intenta de nuevo en unos minutos. ¡Volveré pronto para ayudarte! 🌟"
-                    elif r.status_code == 503:
-                        yield "¡Hola! Lumina está recibiendo muchísimas consultas en este momento y está un poco ocupada. 📭 Por favor, intenta de nuevo en unos segundos. ¡Estaré lista para ti de inmediato! ☕"
-                    else:
-                        yield "Lumina ha experimentado un problema técnico temporal al procesar tu solicitud. 🛠️ Por favor, intenta de nuevo en un momento. ¡Gracias por tu paciencia! ✨"
+                    yield friendly_error(r.status_code)
                     return
 
                 async for line in r.aiter_lines():
-                    if line.startswith("data:"):
-                        data_str = line[5:].strip()
-                        if data_str == "[DONE]":
-                            break
-                        try:
-                            data = json.loads(data_str)
-                            if data.get("type") == "content_block_delta":
-                                text = data.get("delta", {}).get("text", "")
-                                if text:
-                                    yield text
-                            elif data.get("type") == "error":
-                                print(
-                                    f"[stream_claude] API error event: {data}",
-                                    flush=True,
-                                )
-                        except Exception:
-                            pass
+                    if not line.startswith("data:"):
+                        continue
+                    data_str = line[5:].strip()
+                    if data_str == "[DONE]":
+                        break
+                    try:
+                        data = json.loads(data_str)
+                    except json.JSONDecodeError:
+                        continue
+                    kind = data.get("type")
+                    if kind == "content_block_delta":
+                        text = data.get("delta", {}).get("text", "")
+                        if text:
+                            streamed_any = True
+                            yield text
+                    elif kind == "message_start":
+                        u = data.get("message", {}).get("usage", {}) or {}
+                        counts["input"] = u.get("input_tokens", 0)
+                        counts["cached"] = u.get("cache_read_input_tokens", 0)
+                        counts["cache_write"] = u.get("cache_creation_input_tokens", 0)
+                    elif kind == "message_delta":
+                        u = data.get("usage", {}) or {}
+                        counts["output"] = u.get("output_tokens", 0)
+                    elif kind == "error":
+                        print(f"[stream_claude] API error event: {data}", flush=True)
         except Exception as e:
             print(f"[stream_claude] exception: {e!r}", flush=True)
-            yield "\nLumina ha experimentado un problema técnico temporal al procesar tu solicitud. 🛠️ Por favor, intenta de nuevo en un momento."
+            yield STREAM_BROKEN if streamed_any else TEMPORARY_ERROR
+            return
+
+    if usage is not None and counts:
+        usage.update(
+            provider="claude",
+            model=payload.get("model"),
+            input=counts.get("input", 0),
+            cached=counts.get("cached", 0),
+            cache_write=counts.get("cache_write", 0),
+            output=counts.get("output", 0),
+            thoughts=0,
+        )
+
+
+def claude_system_blocks(body: ChatRequestSchema) -> list[dict]:
+    """The system prompt with a cache breakpoint after its stable part: later
+    turns read that part at a fraction of the price."""
+    text = body.system_context
+    cut = body.cache_prefix_chars
+    if not cut or cut >= len(text):
+        return [{"type": "text", "text": text, "cache_control": {"type": "ephemeral"}}]
+    return [
+        {
+            "type": "text",
+            "text": text[:cut],
+            "cache_control": {"type": "ephemeral"},
+        },
+        {"type": "text", "text": text[cut:]},
+    ]
+
+
+def build_claude_payload(body: ChatRequestSchema) -> dict:
+    return {
+        "model": resolve_claude_model(body.model),
+        "max_tokens": settings.MAX_OUTPUT_TOKENS,
+        "system": claude_system_blocks(body),
+        "messages": [
+            {
+                "role": "user" if m.role == "user" else "assistant",
+                "content": m.content,
+            }
+            for m in body.messages
+        ],
+        "stream": True,
+    }
+
+
+def build_gemini_payload(body: ChatRequestSchema, model: str) -> dict:
+    return {
+        "contents": [
+            {
+                "role": "user" if m.role == "user" else "model",
+                "parts": [{"text": m.content}],
+            }
+            for m in body.messages
+        ],
+        "systemInstruction": {"parts": [{"text": body.system_context}]},
+        "generationConfig": gemini_generation_config(model),
+    }
 
 
 # ─── Endpoints ────────────────────────────────────────────────────────────────
@@ -198,118 +352,41 @@ async def chat_endpoint(body: ChatRequestSchema):
         raise HTTPException(status_code=400, detail="Messages array cannot be empty")
 
     async def stream_chat():
-        # 1. Try Claude if ANTHROPIC_API_KEY is configured
-        fallback_to_gemini = False
+        usage: dict[str, Any] | None = {} if body.include_usage else None
+        # Only pass `usage` when asked: the streamers can be swapped in tests.
+        usage_kwargs = {"usage": usage} if usage is not None else {}
+
+        # 1. Claude, when configured; Gemini if it fails before answering.
         if settings.ANTHROPIC_API_KEY:
-            claude_messages = []
-            for m in body.messages:
-                claude_messages.append(
-                    {
-                        "role": "user" if m.role == "user" else "assistant",
-                        "content": m.content,
-                    }
-                )
-
-            # Map model identifiers dynamically to supported ones
-            model_lower = (body.model or "").lower()
-            if "haiku" in model_lower:
-                selected_model = "claude-3-5-haiku-20241022"
-            elif "opus" in model_lower:
-                selected_model = "claude-3-opus-20240229"
-            else:
-                selected_model = "claude-3-5-sonnet-20241022"
-
-            payload = {
-                "model": selected_model,
-                "max_tokens": 4000,
-                "system": body.system_context,
-                "messages": claude_messages,
-                "stream": True,
-            }
-
-            url = "https://api.anthropic.com/v1/messages"
-            headers = {
-                "x-api-key": settings.ANTHROPIC_API_KEY,
-                "anthropic-version": "2023-06-01",
-                "content-type": "application/json",
-            }
-
-            streamed_any = False
-            try:
-                async with httpx.AsyncClient() as client:
-                    async with client.stream(
-                        "POST", url, headers=headers, json=payload, timeout=60.0
-                    ) as r:
-                        if r.status_code != 200:
-                            error_body = await r.aread()
-                            print(
-                                f"[stream_claude] non-200 from Anthropic: {r.status_code} - {error_body.decode('utf-8', errors='ignore')}. Falling back to Gemini...",
-                                flush=True,
-                            )
-                            fallback_to_gemini = True
-                        else:
-                            async for line in r.aiter_lines():
-                                if line.startswith("data:"):
-                                    data_str = line[5:].strip()
-                                    if data_str == "[DONE]":
-                                        break
-                                    try:
-                                        data = json.loads(data_str)
-                                        if data.get("type") == "content_block_delta":
-                                            text = data.get("delta", {}).get("text", "")
-                                            if text:
-                                                streamed_any = True
-                                                yield text
-                                        elif data.get("type") == "error":
-                                            print(
-                                                f"[stream_claude] API error event: {data}",
-                                                flush=True,
-                                            )
-                                    except Exception:
-                                        pass
-                            return
-            except Exception as e:
-                print(f"[stream_claude] exception: {e!r}. Falling back to Gemini...", flush=True)
-                if not streamed_any:
-                    fallback_to_gemini = True
-                else:
-                    yield "\nLumina ha experimentado un problema técnico temporal al procesar tu solicitud. 🛠️ Por favor, intenta de nuevo en un momento."
-                    return
-
-            if not fallback_to_gemini:
+            failed_with = None
+            first = True
+            async for text in stream_claude(build_claude_payload(body), **usage_kwargs):
+                if first and text in CLAUDE_FAILURES:
+                    failed_with = text
+                    break
+                first = False
+                yield text
+            if failed_with is None:
+                if usage:
+                    yield usage_trailer(usage)
                 return
+            if not settings.GOOGLE_GENERATIVE_AI_API_KEY:
+                yield failed_with
+                return
+            print("[chat] Claude failed, falling back to Gemini", flush=True)
 
-        # 2. Fallback to Gemini
-        api_key = settings.GOOGLE_GENERATIVE_AI_API_KEY
-        if not api_key:
+        # 2. Gemini
+        if not settings.GOOGLE_GENERATIVE_AI_API_KEY:
             yield "Error: No AI provider (Claude or Gemini) is properly configured in focusly-ai."
             return
 
-        latest_user_message = body.messages[-1].content
-
-        gemini_contents = []
-        for m in body.messages[:-1]:
-            gemini_contents.append(
-                {
-                    "role": "user" if m.role == "user" else "model",
-                    "parts": [{"text": m.content}],
-                }
-            )
-
-        gemini_contents.append({"role": "user", "parts": [{"text": latest_user_message}]})
-
-        gemini_payload = {
-            "contents": gemini_contents,
-            "systemInstruction": {"parts": [{"text": body.system_context}]},
-        }
-
-        model = body.model or "gemini-2.5-flash"
-        model_lower = model.lower()
-        if "claude" in model_lower or "2.0-flash" in model_lower:
-            model = "gemini-2.5-flash"
-
-        async for chunk in stream_gemini(gemini_payload, model):
-            yield chunk
+        model = resolve_gemini_model(body.model)
+        async for text in stream_gemini(
+            build_gemini_payload(body, model), model, **usage_kwargs
+        ):
+            yield text
+        if usage:
+            yield usage_trailer(usage)
 
     return StreamingResponse(stream_chat(), media_type="text/plain")
 
@@ -335,11 +412,14 @@ async def analyze_patterns_endpoint(body: AnalyzePatternsRequest):
         work_style_hint=body.work_style_hint,
     )
 
-    url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key={api_key}"
+    url = f"https://generativelanguage.googleapis.com/v1beta/models/{settings.GEMINI_STRONG_MODEL}:generateContent?key={api_key}"
     payload = {
         "contents": [{"role": "user", "parts": [{"text": user_prompt}]}],
         "systemInstruction": {"parts": [{"text": system_instruction}]},
-        "generationConfig": {"responseMimeType": "application/json"},
+        "generationConfig": {
+            "responseMimeType": "application/json",
+            **gemini_generation_config(settings.GEMINI_STRONG_MODEL, structured=True),
+        },
     }
 
     async with httpx.AsyncClient() as client:

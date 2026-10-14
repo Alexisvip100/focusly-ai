@@ -9,7 +9,7 @@ parsing de respuestas, manejo de ValidationError y edge cases de producción.
 
 import json
 import pytest
-from unittest.mock import MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 from pydantic import ValidationError
 
 from app.services.ai.planner import (
@@ -36,10 +36,10 @@ def make_service(response_text: str) -> AIPlannerService:
     mock_response.text = response_text
 
     mock_models = MagicMock()
-    mock_models.generate_content.return_value = mock_response
+    mock_models.generate_content = AsyncMock(return_value=mock_response)
 
     mock_client = MagicMock()
-    mock_client.models = mock_models
+    mock_client.aio.models = mock_models
 
     with (
         patch("app.services.ai.planner.settings") as mock_settings,
@@ -289,7 +289,7 @@ class TestOrganizeTasksService:
         tasks = make_tasks(2)
         service = make_service(self._make_response(tasks))
         result = await service.organize_tasks(tasks)
-        assert service.client.models.generate_content.called
+        assert service.client.aio.models.generate_content.called
 
     @pytest.mark.asyncio
     async def test_organize_tasks_returns_organize_response_type(self):
@@ -303,7 +303,7 @@ class TestOrganizeTasksService:
         tasks = make_tasks(3)
         service = make_service(self._make_response(tasks))
         await service.organize_tasks(tasks)
-        call_args = service.client.models.generate_content.call_args
+        call_args = service.client.aio.models.generate_content.call_args
         prompt = call_args[1]["contents"]
         for t in tasks:
             assert t["id"] in prompt, f"Task ID {t['id']} not in prompt"
@@ -313,7 +313,7 @@ class TestOrganizeTasksService:
         tasks = make_tasks(3)
         service = make_service(self._make_response(tasks))
         await service.organize_tasks(tasks)
-        prompt = service.client.models.generate_content.call_args[1]["contents"]
+        prompt = service.client.aio.models.generate_content.call_args[1]["contents"]
         for t in tasks:
             assert t["title"] in prompt
 
@@ -322,7 +322,7 @@ class TestOrganizeTasksService:
         tasks = make_tasks(2)
         service = make_service(self._make_response(tasks))
         await service.organize_tasks(tasks)
-        call_args = service.client.models.generate_content.call_args[1]
+        call_args = service.client.aio.models.generate_content.call_args[1]
         assert call_args["config"].response_mime_type == "application/json"
 
     @pytest.mark.asyncio
@@ -330,7 +330,7 @@ class TestOrganizeTasksService:
         tasks = make_tasks(2)
         service = make_service(self._make_response(tasks))
         await service.organize_tasks(tasks)
-        call_args = service.client.models.generate_content.call_args[1]
+        call_args = service.client.aio.models.generate_content.call_args[1]
         assert call_args["model"] == "gemini-2.5-flash"
 
     @pytest.mark.asyncio
@@ -415,7 +415,7 @@ class TestOrganizeTasksService:
             )
         )
         result = await service.organize_tasks(tasks)
-        prompt = service.client.models.generate_content.call_args[1]["contents"]
+        prompt = service.client.aio.models.generate_content.call_args[1]["contents"]
         assert "🚀" in prompt
         assert "autenticación" in prompt
 
@@ -465,7 +465,7 @@ class TestOrganizeTasksService:
             )
         )
         await service.organize_tasks(tasks)
-        prompt = service.client.models.generate_content.call_args[1]["contents"]
+        prompt = service.client.aio.models.generate_content.call_args[1]["contents"]
         assert "No description" in prompt
 
 
@@ -501,7 +501,7 @@ class TestCalendarPlannerService:
         tasks = make_tasks(2)
         service = make_service(self._make_calendar_response())
         await service.ai_calendar_planner(tasks, [])
-        prompt = service.client.models.generate_content.call_args[1]["contents"]
+        prompt = service.client.aio.models.generate_content.call_args[1]["contents"]
         assert tasks[0]["title"] in prompt
         assert tasks[1]["title"] in prompt
 
@@ -511,7 +511,7 @@ class TestCalendarPlannerService:
         slots = [{"start": "2026-08-05T09:00:00", "end": "2026-08-05T12:00:00"}]
         service = make_service(self._make_calendar_response())
         await service.ai_calendar_planner(tasks, slots)
-        prompt = service.client.models.generate_content.call_args[1]["contents"]
+        prompt = service.client.aio.models.generate_content.call_args[1]["contents"]
         assert "2026-08-05T09:00:00" in prompt
         assert "2026-08-05T12:00:00" in prompt
 
@@ -545,7 +545,7 @@ class TestCalendarPlannerService:
             )
         )
         await service.ai_calendar_planner(tasks, slots)
-        prompt = service.client.models.generate_content.call_args[1]["contents"]
+        prompt = service.client.aio.models.generate_content.call_args[1]["contents"]
         assert "3h" in prompt
 
     @pytest.mark.asyncio
@@ -554,7 +554,7 @@ class TestCalendarPlannerService:
         tasks = [{"id": "t1", "title": "Quick task"}]
         service = make_service(json.dumps({"events": []}))
         await service.ai_calendar_planner(tasks, [])
-        prompt = service.client.models.generate_content.call_args[1]["contents"]
+        prompt = service.client.aio.models.generate_content.call_args[1]["contents"]
         assert "30 mins" in prompt
 
     @pytest.mark.asyncio
@@ -574,7 +574,7 @@ class TestCalendarPlannerService:
         ]
         service = make_service(json.dumps({"events": []}))
         await service.ai_calendar_planner(tasks, slots)
-        prompt = service.client.models.generate_content.call_args[1]["contents"]
+        prompt = service.client.aio.models.generate_content.call_args[1]["contents"]
         assert "2026-08-05T14:00:00" in prompt
         assert "2026-08-06T09:00:00" in prompt
 
@@ -613,7 +613,7 @@ class TestWeeklyPlannerService:
         tasks = make_tasks(3)
         service = make_service(_weekly_response())
         await service.weekly_planner(tasks, {"working_hours": "09:00 - 18:00"})
-        prompt = service.client.models.generate_content.call_args[1]["contents"]
+        prompt = service.client.aio.models.generate_content.call_args[1]["contents"]
         for t in tasks:
             assert t["title"] in prompt
 
@@ -623,7 +623,7 @@ class TestWeeklyPlannerService:
         availability = {"working_hours": "08:00 - 12:00", "days_off": ["Sunday"]}
         service = make_service(_weekly_response())
         await service.weekly_planner(tasks, availability)
-        prompt = service.client.models.generate_content.call_args[1]["contents"]
+        prompt = service.client.aio.models.generate_content.call_args[1]["contents"]
         assert "08:00 - 12:00" in prompt
 
     @pytest.mark.asyncio
@@ -684,28 +684,28 @@ class TestTaskImproveServiceSubtasks:
     async def test_subtasks_mode_prompt_contains_title(self):
         service = make_service(json.dumps({"subtasks": ["Step 1"]}))
         await service.task_improve("Mi tarea importante", "descripción", "subtasks")
-        prompt = service.client.models.generate_content.call_args[1]["contents"]
+        prompt = service.client.aio.models.generate_content.call_args[1]["contents"]
         assert "Mi tarea importante" in prompt
 
     @pytest.mark.asyncio
     async def test_subtasks_mode_prompt_contains_description(self):
         service = make_service(json.dumps({"subtasks": ["Step 1"]}))
         await service.task_improve("Tarea", "Descripción muy específica", "subtasks")
-        prompt = service.client.models.generate_content.call_args[1]["contents"]
+        prompt = service.client.aio.models.generate_content.call_args[1]["contents"]
         assert "Descripción muy específica" in prompt
 
     @pytest.mark.asyncio
     async def test_subtasks_mode_uses_subtasks_schema(self):
         service = make_service(json.dumps({"subtasks": ["Step 1"]}))
         await service.task_improve("Tarea", "", "subtasks")
-        call_args = service.client.models.generate_content.call_args[1]
+        call_args = service.client.aio.models.generate_content.call_args[1]
         assert call_args["config"].response_schema == SubtasksResponse
 
     @pytest.mark.asyncio
     async def test_subtasks_empty_description_uses_placeholder(self):
         service = make_service(json.dumps({"subtasks": ["Step 1"]}))
         await service.task_improve("Tarea sin desc", "", "subtasks")
-        prompt = service.client.models.generate_content.call_args[1]["contents"]
+        prompt = service.client.aio.models.generate_content.call_args[1]["contents"]
         assert "No description provided" in prompt
 
     @pytest.mark.asyncio
@@ -713,7 +713,7 @@ class TestTaskImproveServiceSubtasks:
         service = make_service(json.dumps({"subtasks": ["Step 1"]}))
         # description="" es el default del endpoint; task_improve recibe "" cuando es None
         await service.task_improve("Tarea", "", "subtasks")
-        prompt = service.client.models.generate_content.call_args[1]["contents"]
+        prompt = service.client.aio.models.generate_content.call_args[1]["contents"]
         assert "No description provided" in prompt
 
 
@@ -728,7 +728,7 @@ class TestTaskImproveServiceEstimate:
     async def test_estimate_mode_uses_estimate_schema(self):
         service = make_service(json.dumps({"estimatedTime": "1h"}))
         await service.task_improve("Tarea", "desc", "estimate")
-        call_args = service.client.models.generate_content.call_args[1]
+        call_args = service.client.aio.models.generate_content.call_args[1]
         assert call_args["config"].response_schema == EstimatedTimeResponse
 
     @pytest.mark.asyncio
@@ -737,7 +737,7 @@ class TestTaskImproveServiceEstimate:
         await service.task_improve(
             "Crear API REST completa", "CRUD con auth", "estimate"
         )
-        prompt = service.client.models.generate_content.call_args[1]["contents"]
+        prompt = service.client.aio.models.generate_content.call_args[1]["contents"]
         assert "Crear API REST completa" in prompt
 
 
@@ -754,14 +754,14 @@ class TestTaskImproveServicePriority:
     async def test_priority_mode_uses_priority_schema(self):
         service = make_service(json.dumps({"suggestedPriority": "MEDIUM"}))
         await service.task_improve("Tarea", "desc", "priority")
-        call_args = service.client.models.generate_content.call_args[1]
+        call_args = service.client.aio.models.generate_content.call_args[1]
         assert call_args["config"].response_schema == SuggestedPriorityResponse
 
     @pytest.mark.asyncio
     async def test_priority_mode_prompt_contains_title_and_description(self):
         service = make_service(json.dumps({"suggestedPriority": "LOW"}))
         await service.task_improve("Refactorizar código", "Sin deadline", "priority")
-        prompt = service.client.models.generate_content.call_args[1]["contents"]
+        prompt = service.client.aio.models.generate_content.call_args[1]["contents"]
         assert "Refactorizar código" in prompt
 
 
@@ -792,7 +792,7 @@ class TestTaskImproveServiceAll:
             )
         )
         await service.task_improve("Tarea", "desc", "all")
-        call_args = service.client.models.generate_content.call_args[1]
+        call_args = service.client.aio.models.generate_content.call_args[1]
         assert call_args["config"].response_schema == ImproveAllResponse
 
     @pytest.mark.asyncio
@@ -858,10 +858,86 @@ class TestPlannerServiceErrorHandling:
 
     @pytest.mark.asyncio
     async def test_gemini_client_exception_propagates(self):
-        """Si genai.Client.models.generate_content lanza excepción, debe propagarse."""
+        """Si genai.Client.aio.models.generate_content lanza excepción, debe propagarse."""
         service = make_service("")
-        service.client.models.generate_content.side_effect = RuntimeError(
+        service.client.aio.models.generate_content.side_effect = RuntimeError(
             "Network error"
         )
         with pytest.raises(RuntimeError, match="Network error"):
             await service.organize_tasks(make_tasks(1))
+
+
+# ─── Token spend ───────────────────────────────────────────────────────────────
+
+
+class TestPlannerTokenSpend:
+    @pytest.mark.asyncio
+    async def test_planning_thinking_is_capped(self):
+        from app.services.ai.planner import settings
+
+        service = make_service(json.dumps({"plan": []}))
+        await service.organize_tasks([])
+        call = service.client.aio.models.generate_content.call_args[1]
+        assert call["config"].thinking_config.thinking_budget == (
+            settings.THINKING_BUDGET_STRUCTURED
+        )  # gemini-2.5-flash, the default strong model
+        assert call["config"].max_output_tokens == settings.MAX_OUTPUT_TOKENS
+        assert call["config"].response_schema == TasksOrganizeResponse
+
+    @pytest.mark.asyncio
+    async def test_task_improve_uses_light_model_without_thinking(self):
+        from google.genai import types
+
+        service = make_service(json.dumps({"estimatedTime": "30m"}))
+        await service.task_improve("Tarea", "desc", "estimate")
+        call = service.client.aio.models.generate_content.call_args[1]
+        assert call["model"] == "gemini-3.5-flash-lite"
+        assert call["config"].thinking_config.thinking_level == (
+            types.ThinkingLevel.MINIMAL
+        )
+
+    @pytest.mark.asyncio
+    async def test_slow_gemini_times_out(self, monkeypatch):
+        import asyncio
+
+        monkeypatch.setattr(
+            "app.services.ai.planner.settings.REQUEST_TIMEOUT_SECONDS", 0.01
+        )
+        service = make_service("")
+
+        async def slow(**_):
+            await asyncio.sleep(1)
+
+        service.client.aio.models.generate_content = slow
+        with pytest.raises(asyncio.TimeoutError):
+            await service.organize_tasks(make_tasks(1))
+
+
+class TestCalendarPlannerPrompt:
+    @pytest.mark.asyncio
+    async def test_deadlines_and_offsets_reach_the_model(self):
+        service = make_service(json.dumps({"events": []}))
+        await service.ai_calendar_planner(
+            [
+                {
+                    "id": "a",
+                    "title": "Informe",
+                    "duration": "60m",
+                    "priority": "High",
+                    "deadline": "2026-10-08T17:00:00-06:00",
+                },
+                {"id": "b", "title": "Leer", "duration": "30m", "priority": "Low"},
+            ],
+            [
+                {
+                    "start": "2026-10-07T10:00:00-06:00",
+                    "end": "2026-10-07T12:00:00-06:00",
+                }
+            ],
+        )
+        prompt = service.client.aio.models.generate_content.call_args[1]["contents"]
+        assert "Deadline: 2026-10-08T17:00:00-06:00" in prompt
+        assert "| Priority: Low\n" in prompt + "\n"  # no deadline: none shown
+        assert "2026-10-07T10:00:00-06:00 to 2026-10-07T12:00:00-06:00" in prompt
+        assert "same UTC offset" in prompt
+        assert "at most once" in prompt

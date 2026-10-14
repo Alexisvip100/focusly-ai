@@ -1,3 +1,5 @@
+import logging
+
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
 
@@ -7,6 +9,8 @@ from app.services.ai.planner import (
     CalendarPlannerResponse,
     WeeklyPlanResponse,
 )
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/planner", tags=["planner"])
 
@@ -50,6 +54,7 @@ async def organize_tasks(
         plan = await planner.organize_tasks(body.tasks)
         return plan
     except Exception as e:
+        logger.exception("Planner request failed")
         raise HTTPException(
             status_code=500, detail=f"Failed to organize tasks: {str(e)}"
         )
@@ -64,6 +69,7 @@ async def calendar_planner(
         plan = await planner.ai_calendar_planner(body.tasks, body.free_slots)
         return plan
     except Exception as e:
+        logger.exception("Planner request failed")
         raise HTTPException(
             status_code=500, detail=f"Failed to plan calendar events: {str(e)}"
         )
@@ -79,6 +85,7 @@ async def weekly_planner(
         plan = await planner.weekly_planner(body.tasks, availability)
         return plan
     except Exception as e:
+        logger.exception("Planner request failed")
         raise HTTPException(
             status_code=500, detail=f"Failed to generate weekly plan: {str(e)}"
         )
@@ -95,6 +102,7 @@ async def task_improve(
         )
         return result
     except Exception as e:
+        logger.exception("Planner request failed")
         raise HTTPException(
             status_code=500, detail=f"Failed to suggest task improvements: {str(e)}"
         )

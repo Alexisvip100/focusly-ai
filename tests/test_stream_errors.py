@@ -9,6 +9,7 @@ Estrategia: mock de httpx.AsyncClient a nivel de módulo para simular
 respuestas HTTP completas sin llamadas de red reales.
 """
 
+from app.config import settings
 import json
 import pytest
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -192,7 +193,7 @@ class TestStreamGeminiErrors:
 
     @pytest.mark.asyncio
     async def test_claude_model_name_redirected_to_gemini_flash(self, monkeypatch):
-        """Si model contiene 'claude', debe reemplazarse por gemini-2.5-flash-lite."""
+        """Si model contiene 'claude', debe reemplazarse por el modelo ligero."""
         self._patch_settings(monkeypatch)
         mock_ctx, mock_client = make_httpx_mock(200, chunks=[])
         with patch("app.routes.ai.ai.httpx.AsyncClient", return_value=mock_ctx):
@@ -201,7 +202,7 @@ class TestStreamGeminiErrors:
             await collect_stream(stream_gemini({}, "claude-sonnet"))
 
         call_url = mock_client.stream.call_args[0][1]
-        assert "gemini-2.5-flash-lite" in call_url
+        assert settings.GEMINI_LIGHT_MODEL in call_url
         assert "claude" not in call_url
 
     @pytest.mark.asyncio
