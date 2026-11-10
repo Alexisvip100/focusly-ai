@@ -86,7 +86,8 @@ Available slots:
 
 PLANNER_WEEKLY_PROMPT = """
 You are the Weekly AI Planner.
-Distribute the following pending tasks across the days of the week (Monday through Sunday) based on priorities, deadlines, and general availability: {availability}.
+Distribute the following pending tasks across these days, and only these: {days}. Base it on priorities, deadlines, and general availability: {availability}.
+Always use the English day name in "day". Write "recommendationSummary" in this language: {language}. Don't mention times of day: they are assigned afterwards.
 
 Return your response as a JSON object with this EXACT structure:
 {{

@@ -156,7 +156,11 @@ class AIPlannerService:
         return CalendarPlannerResponse.model_validate_json(response.text)
 
     async def weekly_planner(
-        self, tasks: list[dict[str, Any]], availability: dict[str, Any]
+        self,
+        tasks: list[dict[str, Any]],
+        availability: dict[str, Any],
+        available_days: list[str] | None = None,
+        language: str | None = None,
     ) -> WeeklyPlanResponse:
         tasks_context = "\n".join(
             [
@@ -166,7 +170,10 @@ class AIPlannerService:
         )
 
         prompt = PLANNER_WEEKLY_PROMPT.format(
-            tasks_context=tasks_context, availability=availability
+            tasks_context=tasks_context,
+            availability=availability,
+            days=", ".join(available_days) if available_days else "Monday to Sunday",
+            language=language or "the language of the task titles",
         )
         response = await self._generate(prompt, WeeklyPlanResponse)
         return WeeklyPlanResponse.model_validate_json(response.text)
