@@ -63,10 +63,15 @@ class TestPlannerPromptsFormatting:
         tasks_context = "- Title: Test | Priority: HIGH"
         availability = {"working_hours": "09:00 - 18:00"}
         prompt = PLANNER_WEEKLY_PROMPT.format(
-            tasks_context=tasks_context, availability=availability
+            tasks_context=tasks_context,
+            availability=availability,
+            days="Wednesday, Friday",
+            language="es",
         )
         assert tasks_context in prompt
         assert "09:00 - 18:00" in prompt
+        assert "only these: Wednesday, Friday" in prompt
+        assert "this language: es" in prompt
         assert "{tasks_context}" not in prompt
         assert "{availability}" not in prompt
         assert '"weeklyPlan": [' in prompt

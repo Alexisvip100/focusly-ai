@@ -34,6 +34,8 @@ class CalendarPlannerRequest(BaseModel):
 class WeeklyPlannerRequest(BaseModel):
     tasks: list[dict[str, object]]
     availability: dict[str, object] | None = None
+    available_days: list[str] | None = None
+    language: str | None = None
 
 
 class TaskImproveRequest(BaseModel):
@@ -82,7 +84,9 @@ async def weekly_planner(
 ):
     try:
         availability = body.availability or {"working_hours": "09:00 - 18:00"}
-        plan = await planner.weekly_planner(body.tasks, availability)
+        plan = await planner.weekly_planner(
+            body.tasks, availability, body.available_days, body.language
+        )
         return plan
     except Exception as e:
         logger.exception("Planner request failed")
