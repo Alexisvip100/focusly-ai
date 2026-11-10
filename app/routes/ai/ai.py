@@ -2,6 +2,7 @@ from fastapi import APIRouter, HTTPException
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 from typing import Any
+import asyncio
 import httpx
 import json
 
@@ -90,6 +91,10 @@ class GeminiStreamParser:
         self.buffer = ""
         # The last usageMetadata seen (Gemini sends it with the final chunk).
         self.usage: dict[str, Any] | None = None
+        # Past its quota mid-reply, Gemini still answers 200 and ends the
+        # stream with an {"error": ...} object, or just stops.
+        self.error: dict[str, Any] | None = None
+        self.finish_reason: str | None = None
 
     def feed(self, chunk: str):
         self.buffer += chunk
@@ -133,8 +138,13 @@ class GeminiStreamParser:
                     obj = json.loads(obj_str)
                     if obj.get("usageMetadata"):
                         self.usage = obj["usageMetadata"]
+                    if obj.get("error"):
+                        self.error = obj["error"]
                     candidates = obj.get("candidates", [])
                     if candidates:
+                        self.finish_reason = (
+                            candidates[0].get("finishReason") or self.finish_reason
+                        )
                         content = candidates[0].get("content", {})
                         parts = content.get("parts", [])
                         # Thought summaries (if any) are not part of the reply.
@@ -153,6 +163,9 @@ class GeminiStreamParser:
 TOO_MANY_REQUESTS = "Lumina ha alcanzado el límite de consultas permitidas por hoy. ⏳ Por favor, dale un respiro e intenta de nuevo en unos minutos. ¡Volveré pronto para ayudarte! 🌟"
 OVERLOADED = "¡Hola! Lumina está recibiendo muchísimas consultas en este momento y está un poco ocupada. 📭 Por favor, intenta de nuevo en unos segundos. ¡Estaré lista para ti de inmediato! ☕"
 TEMPORARY_ERROR = "Lumina ha experimentado un problema técnico temporal al procesar tu solicitud. 🛠️ Por favor, intenta de nuevo en un momento. ¡Gracias por tu paciencia! ✨"
+# The front recognizes this exact text (STREAM_INCOMPLETE_NOTICE in lumina.ts)
+# to show it even when the reply was cut inside an action tag.
+STREAM_INCOMPLETE = "\n\n⚠️ Lumina no pudo terminar esta respuesta. Por favor, intenta de nuevo en un momento."
 STREAM_BROKEN = "\nLumina ha experimentado un problema técnico temporal al procesar tu solicitud. 🛠️ Por favor, intenta de nuevo en un momento."
 
 
@@ -162,6 +175,11 @@ def friendly_error(status_code: int) -> str:
     if status_code == 503:
         return OVERLOADED
     return TEMPORARY_ERROR
+
+
+# An error inside the stream before any text is worth one more try.
+GEMINI_STREAM_ATTEMPTS = 2
+GEMINI_STREAM_RETRY_SECONDS = 2
 
 
 # What stream_claude yields when it fails before answering.
@@ -178,33 +196,59 @@ async def stream_gemini(payload: dict, model: str, usage: dict | None = None):
 
     model = resolve_gemini_model(model)
     url = f"https://generativelanguage.googleapis.com/v1beta/models/{model}:streamGenerateContent?key={api_key}"
-    parser = GeminiStreamParser()
+    for attempt in range(1, GEMINI_STREAM_ATTEMPTS + 1):
+        parser = GeminiStreamParser()
+        sent_text = False
 
-    async with httpx.AsyncClient() as client:
-        try:
-            async with client.stream(
-                "POST", url, json=payload, timeout=settings.REQUEST_TIMEOUT_SECONDS
-            ) as r:
-                if r.status_code != 200:
-                    error_body = await r.aread()  # consume connection
-                    detail = (
-                        error_body.decode("utf-8", errors="ignore")[:500]
-                        if isinstance(error_body, bytes)
-                        else ""
-                    )
-                    print(
-                        f"[stream_gemini] {model} answered {r.status_code}: {detail}",
-                        flush=True,
-                    )
-                    yield friendly_error(r.status_code)
-                    return
+        async with httpx.AsyncClient() as client:
+            try:
+                async with client.stream(
+                    "POST", url, json=payload, timeout=settings.REQUEST_TIMEOUT_SECONDS
+                ) as r:
+                    if r.status_code != 200:
+                        error_body = await r.aread()  # consume connection
+                        detail = (
+                            error_body.decode("utf-8", errors="ignore")[:500]
+                            if isinstance(error_body, bytes)
+                            else ""
+                        )
+                        print(
+                            f"[stream_gemini] {model} answered {r.status_code}: {detail}",
+                            flush=True,
+                        )
+                        yield friendly_error(r.status_code)
+                        return
 
-                async for chunk in r.aiter_text():
-                    for text in parser.feed(chunk):
-                        yield text
-        except Exception:
-            yield STREAM_BROKEN
-            return
+                    async for chunk in r.aiter_text():
+                        for text in parser.feed(chunk):
+                            sent_text = True
+                            yield text
+            except Exception:
+                yield STREAM_BROKEN
+                return
+
+        if parser.error:
+            print(
+                f"[stream_gemini] {model} error inside the stream "
+                f"(attempt {attempt}, text sent: {sent_text}): "
+                f"{parser.error.get('code')} {parser.error.get('status')}",
+                flush=True,
+            )
+        if not parser.error or sent_text or attempt == GEMINI_STREAM_ATTEMPTS:
+            break
+        await asyncio.sleep(GEMINI_STREAM_RETRY_SECONDS)
+
+    if parser.finish_reason not in (None, "STOP"):
+        print(
+            f"[stream_gemini] {model} finished with {parser.finish_reason}",
+            flush=True,
+        )
+    if parser.error and not sent_text:
+        yield friendly_error(parser.error.get("code") or 0)
+    elif sent_text and (parser.error or parser.finish_reason is None):
+        if not parser.error:
+            print(f"[stream_gemini] {model} ended without a finish reason", flush=True)
+        yield STREAM_INCOMPLETE
 
     if usage is not None and parser.usage:
         u = parser.usage

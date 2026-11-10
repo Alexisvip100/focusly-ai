@@ -621,3 +621,90 @@ class TestAnalyzePatternsHttpErrors:
 
         assert response.status_code == 500
         assert "Error" in response.json()["detail"]
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# Errores dentro de un stream 200 (cuota agotada a mitad de la respuesta)
+# ═══════════════════════════════════════════════════════════════════════════════
+
+
+def _text(text: str, finish: str | None = None) -> dict:
+    candidate = {"content": {"parts": [{"text": text}]}}
+    if finish:
+        candidate["finishReason"] = finish
+    return {"candidates": [candidate]}
+
+
+QUOTA_ERROR = {"error": {"code": 429, "status": "RESOURCE_EXHAUSTED", "message": "x"}}
+
+
+def _body(*objects: dict) -> str:
+    return json.dumps(list(objects))
+
+
+class TestStreamGeminiErrorsInsideTheStream:
+    def _run(self, monkeypatch, *bodies: str):
+        """Corre stream_gemini; cada intento recibe el siguiente body."""
+        monkeypatch.setattr(
+            "app.routes.ai.ai.settings.GOOGLE_GENERATIVE_AI_API_KEY", "k"
+        )
+        mocks = [make_httpx_mock(200, chunks=[b])[0] for b in bodies]
+        sleep = AsyncMock()
+
+        async def run():
+            from app.routes.ai.ai import stream_gemini
+
+            with (
+                patch("app.routes.ai.ai.httpx.AsyncClient", side_effect=mocks),
+                patch("app.routes.ai.ai.asyncio.sleep", sleep),
+            ):
+                return await collect_stream(stream_gemini({}, "gemini-2.5-flash-lite"))
+
+        return run, sleep
+
+    @pytest.mark.asyncio
+    async def test_a_complete_reply_gets_no_notice(self, monkeypatch):
+        from app.routes.ai.ai import STREAM_INCOMPLETE
+
+        run, sleep = self._run(monkeypatch, _body(_text("Hola", "STOP")))
+        result = await run()
+        assert result == ["Hola"]
+        assert STREAM_INCOMPLETE not in result
+        sleep.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_error_before_any_text_retries_once(self, monkeypatch):
+        run, sleep = self._run(
+            monkeypatch, _body(QUOTA_ERROR), _body(_text("Hola", "STOP"))
+        )
+        assert await run() == ["Hola"]
+        sleep.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_error_twice_says_so_instead_of_an_empty_reply(self, monkeypatch):
+        from app.routes.ai.ai import TOO_MANY_REQUESTS
+
+        run, _ = self._run(monkeypatch, _body(QUOTA_ERROR), _body(QUOTA_ERROR))
+        assert await run() == [TOO_MANY_REQUESTS]
+
+    @pytest.mark.asyncio
+    async def test_error_after_text_warns_and_does_not_repeat_it(self, monkeypatch):
+        from app.routes.ai.ai import STREAM_INCOMPLETE
+
+        run, sleep = self._run(monkeypatch, _body(_text("Hola"), QUOTA_ERROR))
+        assert await run() == ["Hola", STREAM_INCOMPLETE]
+        sleep.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_a_stream_that_just_stops_warns(self, monkeypatch):
+        from app.routes.ai.ai import STREAM_INCOMPLETE
+
+        run, _ = self._run(monkeypatch, _body(_text("Hola")))
+        assert await run() == ["Hola", STREAM_INCOMPLETE]
+
+    @pytest.mark.asyncio
+    async def test_other_finish_reasons_are_not_called_incomplete(self, monkeypatch):
+        from app.routes.ai.ai import STREAM_INCOMPLETE
+
+        run, _ = self._run(monkeypatch, _body(_text("Hola", "MAX_TOKENS")))
+        assert STREAM_INCOMPLETE not in await run()
